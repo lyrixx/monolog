@@ -125,6 +125,7 @@ class NormalizerFormatter implements FormatterInterface
             'message' => $e->getMessage(),
             'code' => $e->getCode(),
             'file' => $e->getFile().':'.$e->getLine(),
+            'exception' => (string) $e,
         );
 
         if ($e instanceof \SoapFault) {
@@ -139,23 +140,6 @@ class NormalizerFormatter implements FormatterInterface
             if (isset($e->detail)) {
                 $data['detail'] = $e->detail;
             }
-        }
-
-        $trace = $e->getTrace();
-        foreach ($trace as $frame) {
-            if (isset($frame['file'])) {
-                $data['trace'][] = $frame['file'].':'.$frame['line'];
-            } elseif (isset($frame['function']) && $frame['function'] === '{closure}') {
-                // We should again normalize the frames, because it might contain invalid items
-                $data['trace'][] = $frame['function'];
-            } else {
-                // We should again normalize the frames, because it might contain invalid items
-                $data['trace'][] = $this->toJson($this->normalize($frame), true);
-            }
-        }
-
-        if ($previous = $e->getPrevious()) {
-            $data['previous'] = $this->normalizeException($previous);
         }
 
         return $data;

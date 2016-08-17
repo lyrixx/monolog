@@ -11,8 +11,9 @@
 
 namespace Monolog\Handler;
 
-use Monolog\Formatter\LineFormatter;
 use Monolog\Formatter\FormatterInterface;
+use Monolog\Formatter\LineFormatter;
+use Monolog\Formatter\NormalizerFormatter;
 use Monolog\Logger;
 use Raven_Client;
 
@@ -83,7 +84,7 @@ class RavenHandler extends AbstractProcessingHandler
         }
 
         // the record with the highest severity is the "main" one
-        $record = array_reduce($records, function ($highest, $record) {
+        $mainRecord = array_reduce($records, function ($highest, $record) {
             if ($record['level'] >= $highest['level']) {
                 return $record;
             }
@@ -91,17 +92,49 @@ class RavenHandler extends AbstractProcessingHandler
             return $highest;
         });
 
-        // the other ones are added as a context item
-        $logs = array();
-        foreach ($records as $r) {
-            $logs[] = $this->processRecord($r);
+        $formatter = $this->getBatchFormatter();
+
+        foreach ($records as $record) {
+            $breadcrumb = array(
+                'message' => $record['message'],
+                'category' => $record['channel'],
+                'level' => $this->logLevels[$record['level']],
+            );
+
+            // We do not need to add everything as it's the main log
+            if ($record === $mainRecord) {
+                $this->ravenClient->breadcrumbs->record($breadcrumb);
+
+                continue;
+            }
+
+            $record = $this->processRecord($record);
+            $record = $formatter->format($record);
+
+            if ($record['context']) {
+                foreach ($record['context'] as $key => $value) {
+                    if (!is_scalar($value)) {
+                        $value = json_encode($value, JSON_UNESCAPED_SLASHES);
+                    }
+                    $breadcrumb['data'][$key] = $value;
+                }
+            }
+            if ($record['extra']) {
+                foreach ($record['extra'] as $key => $value) {
+                    if (!is_scalar($value)) {
+                        $value = json_encode($value, JSON_UNESCAPED_SLASHES);
+                    }
+                    $breadcrumb['data']['x.'.$key] = $value;
+                }
+            }
+
+            $this->ravenClient->breadcrumbs->record($breadcrumb);
         }
 
-        if ($logs) {
-            $record['context']['logs'] = (string) $this->getBatchFormatter()->formatBatch($logs);
-        }
+        $mainRecord = $this->processRecord($mainRecord);
+        $mainRecord = $formatter->format($mainRecord);
 
-        $this->handle($record);
+        $this->handle($mainRecord);
     }
 
     /**
@@ -138,7 +171,7 @@ class RavenHandler extends AbstractProcessingHandler
         $options['level'] = $this->logLevels[$record['level']];
         $options['tags'] = array();
         if (!empty($record['extra']['tags'])) {
-            $options['tags'] = array_merge($options['tags'], $record['extra']['tags']);
+            $options['tags'] = $record['extra']['tags'];
             unset($record['extra']['tags']);
         }
         if (!empty($record['context']['tags'])) {
@@ -206,7 +239,7 @@ class RavenHandler extends AbstractProcessingHandler
      */
     protected function getDefaultBatchFormatter()
     {
-        return new LineFormatter();
+        return new NormalizerFormatter();
     }
 
     /**
